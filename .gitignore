@@ -1,0 +1,9 @@
+# Ignore secrets
+.env
+.users.json
+
+# Ignore Mac system files
+.DS_Store
+
+# Ignore logs
+*.log
