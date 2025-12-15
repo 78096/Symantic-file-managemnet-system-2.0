@@ -7,6 +7,20 @@ if [ -f .env ]; then
   set +o allexport
 fi
 
+#  LOGGING MODULE 
+LOG_FILE="semsh.log"
+
+log_event() {
+  local status="$1"
+  local action="$2"
+  local details="$3"
+  local timestamp
+  timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+
+  echo "$timestamp | user=$INPUT_USERNAME | role=$USER_ROLE | action=$action | status=$status | $details" >> "$LOG_FILE"
+}
+# ==================================================
+
 # Path to user credentials and roles
 USERS_FILE=".users.json"
 SANDBOX_DIR="${SANDBOX_DIR:-/Users/a1989/Desktop/sandbox}"
@@ -32,24 +46,20 @@ prompt_password() {
   echo
 }
 
-# Authenticate user, returns 0 if success, 1 if fail
+# Authenticate user
 authenticate_user() {
   local username=$1
   local password=$2
 
-  # Use jq to extract user JSON object
   local user_json
   user_json=$(jq -r --arg u "$username" '.users[] | select(.username == $u)' "$USERS_FILE")
 
-  if [[ -z "$user_json" ]]; then
-    return 1
-  fi
+  [[ -z "$user_json" ]] && return 1
 
   local stored_pass role
   stored_pass=$(echo "$user_json" | jq -r '.password')
   role=$(echo "$user_json" | jq -r '.role')
 
-  # Hash input password with SHA256
   local input_hash
   input_hash=$(echo -n "$password" | shasum -a 256 | awk '{print $1}')
 
@@ -61,99 +71,33 @@ authenticate_user() {
   fi
 }
 
-# Add new user function
-add_new_user() {
-  echo "Creating new user: $NEW_USERNAME"
-  # Ask new password for user
-  echo "Set password for $NEW_USERNAME:"
-  prompt_password
-  local new_user_pass
-  new_user_pass=$(echo -n "$PASSWORD" | shasum -a 256 | awk '{print $1}')
-
-  # Ask for admin credentials to authorize
-  echo "Admin authorization required to create new user."
-  read -p "Admin username: " ADMIN_USER
-  prompt_password
-  local admin_pass=$PASSWORD
-
-  if ! authenticate_user "$ADMIN_USER" "$admin_pass"; then
-    echo "❌ Admin authentication failed. Cannot create new user."
-    return 1
-  fi
-
-  if [[ "$USER_ROLE" != "admin" ]]; then
-    echo "❌ User $ADMIN_USER is not authorized to create users."
-    return 1
-  fi
-
-  # Ask for new user role
-  echo "Set role for $NEW_USERNAME (admin/manager/employee): "
-  read -r NEW_ROLE
-
-  if [[ "$NEW_ROLE" != "admin" && "$NEW_ROLE" != "manager" && "$NEW_ROLE" != "employee" ]]; then
-    echo "Invalid role. Aborting user creation."
-    return 1
-  fi
-
-  # Append new user JSON to .users.json file
-  # Read current users array
-  users_array=$(jq '.users' "$USERS_FILE")
-
-  # Create new user JSON object
-  new_user_json="{\"username\":\"$NEW_USERNAME\",\"password\":\"$new_user_pass\",\"role\":\"$NEW_ROLE\"}"
-
-  # Append new user and save back to file
-  jq --argjson newUser "$new_user_json" '.users += [$newUser]' "$USERS_FILE" > "${USERS_FILE}.tmp" && mv "${USERS_FILE}.tmp" "$USERS_FILE"
-
-  echo "✅ User $NEW_USERNAME created with role $NEW_ROLE."
-
-  return 0
-}
-
-# ==== LOGIN / CREATE LOOP ====
+# ==== LOGIN LOOP ====
 while true; do
   read -p "Enter username: " INPUT_USERNAME
 
-  # Check if user exists
   if jq -e --arg u "$INPUT_USERNAME" '.users[] | select(.username == $u)' "$USERS_FILE" > /dev/null 2>&1; then
-    # User exists, ask password to login
     prompt_password
 
     if authenticate_user "$INPUT_USERNAME" "$PASSWORD"; then
       echo "🔐 Active user role: $USER_ROLE"
+      log_event "SUCCESS" "login" "user logged in"
       break
     else
-      echo "❌ Invalid password. Try again."
+      echo "❌ Invalid password."
+      log_event "FAIL" "login" "invalid password"
     fi
   else
-    # User doesn't exist - trigger creation flow
-    NEW_USERNAME=$INPUT_USERNAME
-    echo "User $NEW_USERNAME not found."
-    read -p "Create new user? (yes/no): " create_choice
-    if [[ "$create_choice" == "yes" ]]; then
-      if add_new_user; then
-        echo "You can now login with new credentials."
-      fi
-    fi
+    echo "❌ User not found."
   fi
 done
 
-# ==== SET PERMISSIONS ====
+# ==== PERMISSIONS ====
 declare -A PERMISSIONS
 case "$USER_ROLE" in
-  admin)
-    PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["delete_file"]=1 ["move_file"]=1 ["read_file"]=1 )
-    ;;
-  manager)
-    PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["move_file"]=1 ["read_file"]=1 )
-    ;;
-  employee)
-    PERMISSIONS=( ["list_files"]=1 ["read_file"]=1 )
-    ;;
-  *)
-    echo "Unknown role, no permissions granted."
-    exit 1
-    ;;
+  admin) PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["delete_file"]=1 ["move_file"]=1 ["read_file"]=1 ) ;;
+  manager) PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["move_file"]=1 ["read_file"]=1 ) ;;
+  employee) PERMISSIONS=( ["list_files"]=1 ["read_file"]=1 ) ;;
+  *) echo "Unknown role"; exit 1 ;;
 esac
 
 echo "Allowed actions: ${!PERMISSIONS[@]}"
@@ -162,107 +106,102 @@ echo "🔧 SEMSH interactive mode started."
 echo "Type English commands. Type 'exit' to quit."
 echo "------------------------------------------------------"
 
-# ==== MAIN REPL LOOP ====
-
+# ==== MAIN LOOP ====
 while true; do
   echo -n "semsh> "
   read -r USER_INPUT
-  [[ "$USER_INPUT" == "exit" ]] && break
+  [[ "$USER_INPUT" == "exit" ]] && log_event "INFO" "logout" "user exited shell" && break
   [[ -z "$USER_INPUT" ]] && continue
 
-  # Call AI API to get action and parameters JSON
-  AI_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
-    -H "Authorization: Bearer $OPENAI_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d @- <<EOF
+AI_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF
 {
   "model": "$OPENAI_MODEL",
   "messages": [
-    {"role": "system", "content": "You are an assistant that ONLY replies with a JSON object with exactly two keys: 'action' and 'parameters'. Allowed actions are: list_files, create_file, delete_file, move_file, read_file. The 'parameters' value should be an object with needed keys for the action, or empty object if none."},
-    {"role": "user", "content": "$USER_INPUT"}
+    {
+      "role": "system",
+      "content": "You MUST reply ONLY with pure JSON: {\"action\":\"list_files|create_file|delete_file|move_file|read_file\",\"parameters\":{}}"
+    },
+    {
+      "role": "user",
+      "content": $(printf '%s' "$USER_INPUT" | jq -R .)
+    }
   ],
   "temperature": 0
 }
 EOF
 )
 
-  # Extract raw content from AI response
-  RAW_CONTENT=$(echo "$AI_RESPONSE" | jq -r '.choices[0].message.content')
+RAW_CONTENT=$(echo "$AI_RESPONSE" | jq -r '.choices[0].message.content // empty')
 
- # Use RAW_CONTENT directly since it's valid JSON
 ACTION=$(echo "$RAW_CONTENT" | jq -r '.action // empty')
 PARAMETERS=$(echo "$RAW_CONTENT" | jq -c '.parameters // {}')
 
-  if [[ -z "$ACTION" ]]; then
-    echo "❌ No action found in AI response."
-    continue
-  fi
+[[ -z "$ACTION" ]] && echo "❌ No action found." && log_event "FAIL" "ai_parse" "no action" && continue
+[[ -z "${PERMISSIONS[$ACTION]}" ]] && echo "❌ No permission." && log_event "FAIL" "$ACTION" "permission denied" && continue
 
-  # Check permission for action
-  if [[ -z "${PERMISSIONS[$ACTION]}" ]]; then
-    echo "❌ You do not have permission to perform '$ACTION'."
-    continue
-  fi
+case "$ACTION" in
+  list_files)
+    DIR=$(echo "$PARAMETERS" | jq -r '.directory // "."')
+    TARGET="$SANDBOX_DIR/$DIR"
+    if [[ ! -d "$TARGET" ]]; then
+      echo "Directory does not exist."
+      log_event "FAIL" "list_files" "dir=$DIR"
+    else
+      ls -1 "$TARGET"
+      log_event "SUCCESS" "list_files" "dir=$DIR"
+    fi
+    ;;
 
-  # Process actions
-  case "$ACTION" in
-    list_files)
-      DIR_PARAM=$(echo "$PARAMETERS" | jq -r '.directory // "."')
-      TARGET_DIR="$SANDBOX_DIR/$DIR_PARAM"
-      if [[ ! -d "$TARGET_DIR" ]]; then
-        echo "Directory does not exist: $TARGET_DIR"
-      else
-        echo "Listing files in $TARGET_DIR:"
-        ls -1 "$TARGET_DIR"
-      fi
-      ;;
+  create_file)
+    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
+    if [[ -z "$FILE" ]]; then
+      echo "File name missing."
+      log_event "FAIL" "create_file" "missing filename"
+    else
+      touch "$SANDBOX_DIR/$FILE"
+      echo "File created."
+      log_event "SUCCESS" "create_file" "file=$FILE"
+    fi
+    ;;
 
-    create_file)
-      FILE_NAME=$(echo "$PARAMETERS" | jq -r '.name // empty')
-      if [[ -z "$FILE_NAME" ]]; then
-        echo "File name missing."
-      else
-        touch "$SANDBOX_DIR/$FILE_NAME" && echo "File created: $SANDBOX_DIR/$FILE_NAME"
-      fi
-      ;;
+  delete_file)
+    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
+    if [[ -z "$FILE" ]]; then
+      echo "File name missing."
+      log_event "FAIL" "delete_file" "missing filename"
+    else
+      rm -i "$SANDBOX_DIR/$FILE"
+      log_event "SUCCESS" "delete_file" "file=$FILE"
+    fi
+    ;;
 
-    delete_file)
-      FILE_NAME=$(echo "$PARAMETERS" | jq -r '.name // empty')
-      if [[ -z "$FILE_NAME" ]]; then
-        echo "File name missing."
-      else
-        rm -i "$SANDBOX_DIR/$FILE_NAME" && echo "File deleted: $SANDBOX_DIR/$FILE_NAME"
-      fi
-      ;;
+  move_file)
+    SRC=$(echo "$PARAMETERS" | jq -r '.source // empty')
+    DEST=$(echo "$PARAMETERS" | jq -r '.destination // empty')
+    if [[ -z "$SRC" || -z "$DEST" ]]; then
+      echo "Missing source/destination."
+      log_event "FAIL" "move_file" "src=$SRC dest=$DEST"
+    else
+      mv "$SANDBOX_DIR/$SRC" "$SANDBOX_DIR/$DEST"
+      echo "Moved."
+      log_event "SUCCESS" "move_file" "from=$SRC to=$DEST"
+    fi
+    ;;
 
-    move_file)
-      SRC=$(echo "$PARAMETERS" | jq -r '.source // empty')
-      DEST=$(echo "$PARAMETERS" | jq -r '.destination // empty')
-      if [[ -z "$SRC" || -z "$DEST" ]]; then
-        echo "Source or destination missing."
-      else
-        mv "$SANDBOX_DIR/$SRC" "$SANDBOX_DIR/$DEST" && echo "Moved $SRC to $DEST"
-      fi
-      ;;
-
-    read_file)
-      FILE_NAME=$(echo "$PARAMETERS" | jq -r '.name // empty')
-      if [[ -z "$FILE_NAME" ]]; then
-        echo "File name missing."
-      else
-        if [[ -f "$SANDBOX_DIR/$FILE_NAME" ]]; then
-          echo "Contents of $FILE_NAME:"
-          cat "$SANDBOX_DIR/$FILE_NAME"
-        else
-          echo "File does not exist: $SANDBOX_DIR/$FILE_NAME"
-        fi
-      fi
-      ;;
-
-    *)
-      echo "Unknown action: $ACTION"
-      ;;
-  esac
+  read_file)
+    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
+    if [[ ! -f "$SANDBOX_DIR/$FILE" ]]; then
+      echo "Missing file."
+      log_event "FAIL" "read_file" "file=$FILE"
+    else
+      cat "$SANDBOX_DIR/$FILE"
+      log_event "SUCCESS" "read_file" "file=$FILE"
+    fi
+    ;;
+esac
 
 done
 
