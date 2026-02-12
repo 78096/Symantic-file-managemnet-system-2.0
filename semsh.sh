@@ -1,208 +1,359 @@
 #!/usr/local/bin/bash
+#
+# SEMSH
 
-# Load .env if present
 if [ -f .env ]; then
   set -o allexport
   source .env
   set +o allexport
 fi
 
-#  LOGGING MODULE 
-LOG_FILE="semsh.log"
+SANDBOX_DIR="/Users/Shared/semsh_sandbox"
+
+USER_TMP="/Users/Shared/semsh_tmp/$(whoami)"
+USER_LOG="/Users/Shared/semsh_tmp/$(whoami).log"
+mkdir -p "$USER_TMP"
+
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+OPENAI_MODEL="gpt-4-0613"
+
+if [[ -z "$OPENAI_API_KEY" ]]; then
+  echo "❌ ERROR: OPENAI_API_KEY missing in .env"
+  exit 1
+fi
+
+CURRENT_USER=$(whoami)
+LAST_ITEM=""
+
+echo "=============================================="
+echo " Welcome to SEMSH"
+echo " Running as: $CURRENT_USER"
+echo " Sandbox: $SANDBOX_DIR"
+echo " Temp & logs: /Users/Shared/semsh_tmp"
+echo " Type: 'switch user <name>' to change user"
+echo "=============================================="
 
 log_event() {
-  local status="$1"
-  local action="$2"
-  local details="$3"
-  local timestamp
-  timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-
-  echo "$timestamp | user=$INPUT_USERNAME | role=$USER_ROLE | action=$action | status=$status | $details" >> "$LOG_FILE"
-}
-# ==================================================
-
-# Path to user credentials and roles
-USERS_FILE=".users.json"
-SANDBOX_DIR="${SANDBOX_DIR:-/Users/a1989/Desktop/sandbox}"
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-OPENAI_MODEL="${OPENAI_MODEL:-gpt-4-0613}"
-
-# Check required env vars
-if [[ -z "$SANDBOX_DIR" ]]; then
-  echo "SANDBOX_DIR not set in environment."
-  exit 1
-fi
-if [[ -z "$OPENAI_API_KEY" ]]; then
-  echo "OPENAI_API_KEY not set in environment."
-  exit 1
-fi
-
-# Function to prompt for password silently
-prompt_password() {
-  stty -echo
-  printf "Enter password: "
-  read -r PASSWORD
-  stty echo
-  echo
+  local action="$1"
+  local details="$2"
+  echo "$(date +"%Y-%m-%d %H:%M:%S") | user=$CURRENT_USER | action=$action | $details" >> "$USER_LOG"
 }
 
-# Authenticate user
-authenticate_user() {
-  local username=$1
-  local password=$2
-
-  local user_json
-  user_json=$(jq -r --arg u "$username" '.users[] | select(.username == $u)' "$USERS_FILE")
-
-  [[ -z "$user_json" ]] && return 1
-
-  local stored_pass role
-  stored_pass=$(echo "$user_json" | jq -r '.password')
-  role=$(echo "$user_json" | jq -r '.role')
-
-  local input_hash
-  input_hash=$(echo -n "$password" | shasum -a 256 | awk '{print $1}')
-
-  if [[ "$input_hash" == "$stored_pass" ]]; then
-    USER_ROLE=$role
-    return 0
-  else
-    return 1
-  fi
+refresh_index() {
+  ./mcp_indexer.sh > /dev/null 2>&1
 }
 
-# ==== LOGIN LOOP ====
-while true; do
-  read -p "Enter username: " INPUT_USERNAME
+AI_SYSTEM_PROMPT=$(cat <<'EOF'
+You are a semantic file assistant.
 
-  if jq -e --arg u "$INPUT_USERNAME" '.users[] | select(.username == $u)' "$USERS_FILE" > /dev/null 2>&1; then
-    prompt_password
+ALWAYS return valid JSON only.
 
-    if authenticate_user "$INPUT_USERNAME" "$PASSWORD"; then
-      echo "🔐 Active user role: $USER_ROLE"
-      log_event "SUCCESS" "login" "user logged in"
-      break
-    else
-      echo "❌ Invalid password."
-      log_event "FAIL" "login" "invalid password"
-    fi
-  else
-    echo "❌ User not found."
-  fi
-done
-
-# ==== PERMISSIONS ====
-declare -A PERMISSIONS
-case "$USER_ROLE" in
-  admin) PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["delete_file"]=1 ["move_file"]=1 ["read_file"]=1 ) ;;
-  manager) PERMISSIONS=( ["list_files"]=1 ["create_file"]=1 ["move_file"]=1 ["read_file"]=1 ) ;;
-  employee) PERMISSIONS=( ["list_files"]=1 ["read_file"]=1 ) ;;
-  *) echo "Unknown role"; exit 1 ;;
-esac
-
-echo "Allowed actions: ${!PERMISSIONS[@]}"
-echo "------------------------------------------------------"
-echo "🔧 SEMSH interactive mode started."
-echo "Type English commands. Type 'exit' to quit."
-echo "------------------------------------------------------"
-
-# ==== MAIN LOOP ====
-while true; do
-  echo -n "semsh> "
-  read -r USER_INPUT
-  [[ "$USER_INPUT" == "exit" ]] && log_event "INFO" "logout" "user exited shell" && break
-  [[ -z "$USER_INPUT" ]] && continue
-
-AI_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d @- <<EOF
 {
-  "model": "$OPENAI_MODEL",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You MUST reply ONLY with pure JSON: {\"action\":\"list_files|create_file|delete_file|move_file|read_file\",\"parameters\":{}}"
+  "intent": "search_files | create_file | delete_files | move_files | rename_item | read_file | explain_file | summarize_files | file_info",
+  "parameters": {
+    "filename": "optional",
+    "source": "optional",
+    "destination": "optional",
+    "type": "file | folder",
+    "new_name": "for renaming",
+    "date_range": {
+      "from": "YYYY-MM-DD or today/yesterday/last_week",
+      "to": "YYYY-MM-DD or today/yesterday/last_week"
     },
-    {
-      "role": "user",
-      "content": $(printf '%s' "$USER_INPUT" | jq -R .)
-    }
-  ],
-  "temperature": 0
+    "contains": "optional text"
+  }
 }
 EOF
 )
 
-RAW_CONTENT=$(echo "$AI_RESPONSE" | jq -r '.choices[0].message.content // empty')
+get_intent_from_ai() {
+  local user_text="$1"
 
-ACTION=$(echo "$RAW_CONTENT" | jq -r '.action // empty')
-PARAMETERS=$(echo "$RAW_CONTENT" | jq -c '.parameters // {}')
+  ESCAPED_PROMPT=$(printf "%s" "$AI_SYSTEM_PROMPT" | jq -Rs .)
+  ESCAPED_USER=$(printf "%s" "$user_text" | jq -Rs .)
 
-[[ -z "$ACTION" ]] && echo "❌ No action found." && log_event "FAIL" "ai_parse" "no action" && continue
-[[ -z "${PERMISSIONS[$ACTION]}" ]] && echo "❌ No permission." && log_event "FAIL" "$ACTION" "permission denied" && continue
+  cat > "$USER_TMP/openai_request.json" <<EOF
+{
+  "model": "$OPENAI_MODEL",
+  "messages": [
+    {"role":"system","content": $ESCAPED_PROMPT},
+    {"role":"user","content": $ESCAPED_USER}
+  ],
+  "temperature": 0
+}
+EOF
 
-case "$ACTION" in
-  list_files)
-    DIR=$(echo "$PARAMETERS" | jq -r '.directory // "."')
-    TARGET="$SANDBOX_DIR/$DIR"
-    if [[ ! -d "$TARGET" ]]; then
-      echo "Directory does not exist."
-      log_event "FAIL" "list_files" "dir=$DIR"
-    else
-      ls -1 "$TARGET"
-      log_event "SUCCESS" "list_files" "dir=$DIR"
-    fi
+  RAW_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d @"$USER_TMP/openai_request.json")
+
+  echo "$RAW_RESPONSE" > "$USER_TMP/last_openai_response.json"
+  echo "$RAW_RESPONSE" | jq -r '.choices[0].message.content // empty'
+}
+
+handle_intent() {
+  local intent="$1"
+  local params="$2"
+
+  FILE=$(echo "$params" | jq -r '.filename // empty')
+
+  if [[ -z "$FILE" && "$USER_INPUT" =~ \bit\b && -n "$LAST_ITEM" ]]; then
+    FILE="$LAST_ITEM"
+  fi
+
+  if [[ "$FILE" == "it" && -n "$LAST_ITEM" ]]; then
+    FILE="$LAST_ITEM"
+  fi
+
+  if echo "$USER_INPUT" | grep -qi "^switch user "; then
+    NEWUSER=$(echo "$USER_INPUT" | awk '{print $3}')
+    echo "🔄 Switching user to $NEWUSER..."
+    exec su "$NEWUSER"
+  fi
+
+  if [[ "$USER_INPUT" =~ ^move\ all\ ([a-zA-Z0-9]+)\ files\ to\ ([a-zA-Z0-9_\/-]+)$ ]]; then
+    FILETYPE="${BASH_REMATCH[1]}"
+    DEST="${BASH_REMATCH[2]}"
+
+    refresh_index
+
+    DEST_DIR="$SANDBOX_DIR/$DEST"
+    mkdir -p "$DEST_DIR"
+
+    find "$SANDBOX_DIR" -type f -name "*.$FILETYPE" | while read -r f; do
+      mv "$f" "$DEST_DIR/"
+      echo "Moved: $f → $DEST_DIR/"
+    done
+
+    refresh_index
+    log_event "bulk_move" "all .$FILETYPE files → $DEST"
+    return
+  fi
+
+  if [[ "$USER_INPUT" =~ ^delete\ all\ ([a-zA-Z0-9]+)\ files$ ]]; then
+    FILETYPE="${BASH_REMATCH[1]}"
+
+    refresh_index
+
+    find "$SANDBOX_DIR" -type f -name "*.$FILETYPE" | while read -r f; do
+      ./mcp_execute.sh --action delete --file "$(basename "$f")"
+      echo "Deleted: $f"
+    done
+
+    refresh_index
+    log_event "bulk_delete" "all .$FILETYPE files"
+    return
+  fi
+
+  case "$intent" in
+
+  search_files)
+    refresh_index
+    echo "🔍 Searching semantic index..."
+    echo "$params" > "$USER_TMP/semsh_last_query.json"
+    ./mcp_query.sh --json "$USER_TMP/semsh_last_query.json"
+    log_event "search_files" "$params"
     ;;
 
   create_file)
-    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
-    if [[ -z "$FILE" ]]; then
-      echo "File name missing."
-      log_event "FAIL" "create_file" "missing filename"
+    if echo "$USER_INPUT" | grep -qi "folder"; then
+      mkdir -p "$SANDBOX_DIR/$FILE"
+      echo "Created folder: $SANDBOX_DIR/$FILE"
+      LAST_ITEM="$FILE"
+      log_event "create_folder" "$FILE"
     else
-      touch "$SANDBOX_DIR/$FILE"
-      echo "File created."
-      log_event "SUCCESS" "create_file" "file=$FILE"
+      ./mcp_execute.sh --action create --file "$FILE"
+      LAST_ITEM="$FILE"
+      log_event "create_file" "$FILE"
     fi
+    refresh_index
     ;;
 
-  delete_file)
-    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
-    if [[ -z "$FILE" ]]; then
-      echo "File name missing."
-      log_event "FAIL" "delete_file" "missing filename"
-    else
-      rm -i "$SANDBOX_DIR/$FILE"
-      log_event "SUCCESS" "delete_file" "file=$FILE"
+    delete_files)
+    echo "⚠️  WARNING: You are about to delete '$FILE'."
+    echo -n "Type 'yes' to confirm: "
+    read -r CONFIRM
+
+    if [[ "$CONFIRM" != "yes" ]]; then
+      echo "❌ Delete cancelled."
+      return
     fi
+
+    ./mcp_execute.sh --action delete --file "$FILE"
+    LAST_ITEM="$FILE"
+    refresh_index
+    log_event "delete_files" "$FILE"
     ;;
 
-  move_file)
-    SRC=$(echo "$PARAMETERS" | jq -r '.source // empty')
-    DEST=$(echo "$PARAMETERS" | jq -r '.destination // empty')
+
+  move_files)
+    SRC=$(echo "$params" | jq -r '.source // empty')
+    DEST=$(echo "$params" | jq -r '.destination // empty')
+    [[ -z "$SRC" ]] && SRC="$FILE"
+
+    if [[ "$SRC" == "it" && -n "$LAST_ITEM" ]]; then
+      SRC="$LAST_ITEM"
+    fi
+
     if [[ -z "$SRC" || -z "$DEST" ]]; then
-      echo "Missing source/destination."
-      log_event "FAIL" "move_file" "src=$SRC dest=$DEST"
-    else
-      mv "$SANDBOX_DIR/$SRC" "$SANDBOX_DIR/$DEST"
-      echo "Moved."
-      log_event "SUCCESS" "move_file" "from=$SRC to=$DEST"
+      echo "❌ ERROR: Missing source or destination."
+      return
     fi
+
+    refresh_index
+
+    DEST_DIR="$SANDBOX_DIR/$DEST"
+    mkdir -p "$DEST_DIR"
+
+    REAL_SRC=$(find "$SANDBOX_DIR" \( -type f -o -type d \) -name "$SRC" 2>/dev/null | head -n 1)
+
+    if [[ -z "$REAL_SRC" ]]; then
+      echo "❌ ERROR: Could not find '$SRC'"
+      return
+    fi
+
+    BASENAME=$(basename "$REAL_SRC")
+    mv "$REAL_SRC" "$DEST_DIR/$BASENAME"
+
+    echo "Moved: $REAL_SRC → $DEST_DIR/$BASENAME"
+
+    LAST_ITEM="$BASENAME"
+    refresh_index
+    log_event "move_files" "$SRC → $DEST"
     ;;
+
+  rename_item)
+    NEW_NAME=$(echo "$params" | jq -r '.new_name // empty')
+
+    if [[ -z "$FILE" ]]; then
+      echo "❌ No file specified to rename."
+      return
+    fi
+
+    if [[ -z "$NEW_NAME" ]]; then
+      echo "❌ Missing new name."
+      return
+    fi
+
+    ./mcp_execute.sh --action rename --file "$FILE" --dest "$NEW_NAME"
+
+    LAST_ITEM="$NEW_NAME"
+    refresh_index
+    log_event "rename_item" "$FILE → $NEW_NAME"
+    ;;
+
+    file_info)
+    refresh_index
+
+    if [[ -z "$FILE" ]]; then
+      echo "❌ ERROR: Please specify a file or folder."
+      return
+    fi
+
+    REAL_PATH=$(find "$SANDBOX_DIR" \( -type f -o -type d \) -name "$FILE" 2>/dev/null | head -n 1)
+
+    if [[ -z "$REAL_PATH" ]]; then
+      echo "❌ ERROR: No file or folder found named '$FILE'"
+      return
+    fi
+
+    OWNER=$(stat -f "%Su" "$REAL_PATH")
+    GROUP=$(stat -f "%Sg" "$REAL_PATH")
+    SIZE=$(stat -f "%z" "$REAL_PATH")
+    PERM=$(stat -f "%Sp" "$REAL_PATH")
+    MODIFIED=$(stat -f "%Sm" -t "%b %d %Y %H:%M" "$REAL_PATH")
+
+    TYPE="File"
+    if [[ -d "$REAL_PATH" ]]; then
+      TYPE="Folder"
+    fi
+
+    # Parse permissions
+    OWNER_PERM=""
+    GROUP_PERM=""
+    OTHER_PERM=""
+
+    [[ "${PERM:1:1}" == "r" ]] && OWNER_PERM+="read "
+    [[ "${PERM:2:1}" == "w" ]] && OWNER_PERM+="write "
+    [[ "${PERM:3:1}" == "x" ]] && OWNER_PERM+="execute "
+
+    [[ "${PERM:4:1}" == "r" ]] && GROUP_PERM+="read "
+    [[ "${PERM:5:1}" == "w" ]] && GROUP_PERM+="write "
+    [[ "${PERM:6:1}" == "x" ]] && GROUP_PERM+="execute "
+
+    [[ "${PERM:7:1}" == "r" ]] && OTHER_PERM+="read "
+    [[ "${PERM:8:1}" == "w" ]] && OTHER_PERM+="write "
+    [[ "${PERM:9:1}" == "x" ]] && OTHER_PERM+="execute "
+
+    echo ""
+    echo "📄 $TYPE Information"
+    echo "----------------------------------"
+    echo "Name: $(basename "$REAL_PATH")"
+    echo "Owner: $OWNER"
+    echo "Group: $GROUP"
+    echo "Size: $SIZE bytes"
+    echo ""
+    echo "Permissions:"
+    echo "  Owner  → $OWNER_PERM"
+    echo "  Group  → $GROUP_PERM"
+    echo "  Others → $OTHER_PERM"
+    echo ""
+    echo "Last Modified: $MODIFIED"
+    echo "Full Path: $REAL_PATH"
+    echo "----------------------------------"
+    echo ""
+
+    LAST_ITEM="$FILE"
+    log_event "file_info" "$FILE"
+    ;;
+
 
   read_file)
-    FILE=$(echo "$PARAMETERS" | jq -r '.name // .filename // empty')
-    if [[ ! -f "$SANDBOX_DIR/$FILE" ]]; then
-      echo "Missing file."
-      log_event "FAIL" "read_file" "file=$FILE"
-    else
-      cat "$SANDBOX_DIR/$FILE"
-      log_event "SUCCESS" "read_file" "file=$FILE"
-    fi
+    refresh_index
+    ./mcp_execute.sh --action read --file "$FILE"
+    LAST_ITEM="$FILE"
+    log_event "read_file" "$FILE"
     ;;
-esac
 
+  explain_file)
+    refresh_index
+    ./mcp_execute.sh --action explain --file "$FILE"
+    LAST_ITEM="$FILE"
+    log_event "explain_file" "$FILE"
+    ;;
+
+  summarize_files)
+    refresh_index
+    if [[ -z "$FILE" ]]; then
+      echo "❌ ERROR: I need a filename to summarize."
+      return
+    fi
+    echo "🧠 Summarizing: $FILE"
+    ./mcp_execute.sh --action summarize --file "$FILE"
+    LAST_ITEM="$FILE"
+    log_event "summarize_file" "$FILE"
+    ;;
+  esac
+}
+
+while true; do
+  echo -n "semsh> "
+  read -r USER_INPUT
+  [[ -z "$USER_INPUT" ]] && continue
+  [[ "$USER_INPUT" == "exit" ]] && exit 0
+
+  echo "🤖 Thinking..."
+  RAW_JSON=$(get_intent_from_ai "$USER_INPUT")
+
+  INTENT=$(echo "$RAW_JSON" | jq -r '.intent // empty' 2>/dev/null)
+  PARAMS=$(echo "$RAW_JSON" | jq -c '.parameters // {}' 2>/dev/null)
+
+  if [[ -z "$INTENT" ]]; then
+    echo "❌ AI returned invalid or empty JSON."
+    continue
+  fi
+
+  echo "➡️ Detected intent: $INTENT"
+  handle_intent "$INTENT" "$PARAMS"
 done
-
-echo "Bye!"

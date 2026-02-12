@@ -1,100 +1,93 @@
-#!/bin/bash
+#!/usr/local/bin/bash
+# QUERY
 
-# Load environment variables
-if [ ! -f .env ]; then
-  echo ".env file not found!"
-  exit 1
-fi
-source .env
+INDEX_FILE=".mcp/file_index.json"
 
-# Check required env vars
-if [ -z "$SANDBOX_DIR" ]; then
-  echo "Set SANDBOX_DIR in .env (e.g. SANDBOX_DIR=/Users/a1989/Desktop/sandbox)"
-  exit 1
-fi
+QUERY_JSON=""
 
-# Usage function
-usage() {
-  echo "Usage: $0 --q <query> [--days <days>] [--top <n>]"
-  echo "Example: $0 --q \"error 104\" --days 7 --top 5"
-  exit 1
-}
-
-# Default values
-DAYS=0
-TOP=10
-
-# Parse arguments
 while [[ $# -gt 0 ]]; do
-  key="$1"
-  case $key in
-    --q)
-      QUERY="$2"
-      shift 2
-      ;;
-    --days)
-      DAYS="$2"
-      shift 2
-      ;;
-    --top)
-      TOP="$2"
-      shift 2
-      ;;
-    *)
-      echo "Unknown option: $1"
-      usage
-      ;;
+  case "$1" in
+    --json) QUERY_JSON="$2"; shift 2 ;;
   esac
 done
 
-if [ -z "$QUERY" ]; then
-  echo "Query string (--q) is required."
-  usage
+if [[ -z "$QUERY_JSON" || ! -f "$QUERY_JSON" ]]; then
+  echo "Invalid query."
+  exit 1
 fi
 
-# Function to convert days to seconds for comparison
-days_to_seconds() {
-  echo $(( $1 * 86400 ))
+PARAMS=$(cat "$QUERY_JSON")
+
+FROM=$(echo "$PARAMS" | jq -r '.date_range.from // empty')
+TO=$(echo "$PARAMS"   | jq -r '.date_range.to // empty')
+CONTAINS=$(echo "$PARAMS" | jq -r '.contains // empty')
+TYPE=$(echo "$PARAMS" | jq -r '.type // empty')
+
+# -------------------------------
+# DATE NORMALIZATION
+# -------------------------------
+
+today() { date +"%Y-%m-%d"; }
+yesterday() { date -v -1d +"%Y-%m-%d" 2>/dev/null || date -d "yesterday" +"%Y-%m-%d"; }
+last_week() { date -v -7d +"%Y-%m-%d" 2>/dev/null || date -d "7 days ago" +"%Y-%m-%d"; }
+
+normalize_date() {
+  case "$1" in
+    today) today ;;
+    yesterday) yesterday ;;
+    last_week) last_week ;;
+    "") echo "" ;;
+    *) echo "$1" ;;
+  esac
 }
 
-SECONDS_LIMIT=0
-if [[ "$DAYS" =~ ^[0-9]+$ ]] && [ "$DAYS" -gt 0 ]; then
-  SECONDS_LIMIT=$(days_to_seconds $DAYS)
+FROM_NORM=$(normalize_date "$FROM")
+TO_NORM=$(normalize_date "$TO")
+
+# If only FROM is provided, assume same day range
+if [[ -n "$FROM_NORM" && -z "$TO_NORM" ]]; then
+  TO_NORM="$FROM_NORM"
 fi
 
-echo "Searching for \"$QUERY\" in files under $SANDBOX_DIR..."
+# -------------------------------
+# QUERY
+# -------------------------------
 
-# Find files modified within DAYS if DAYS>0, else all files
-if [ "$SECONDS_LIMIT" -gt 0 ]; then
-  # Find files modified within last DAYS days
-  FILES=$(find "$SANDBOX_DIR" -type f -mtime -"$DAYS")
-else
-  FILES=$(find "$SANDBOX_DIR" -type f)
-fi
+RESULT=$(jq -r \
+  --arg from "$FROM_NORM" \
+  --arg to "$TO_NORM" \
+  --arg contains "$CONTAINS" \
+  --arg type "$TYPE" \
+'
+.files
+| to_entries[]
+| select(
+    ($from == "" and $to == "") or
+    (.value.created >= $from and .value.created <= $to)
+  )
+| select(
+    ($contains == "" or
+     (.value.preview | ascii_downcase | contains($contains | ascii_downcase)))
+  )
+| select(
+    ($type == "" or
+     ($type == "folder" and .value.type == "directory") or
+     ($type == "file" and .value.type != "directory"))
+  )
+| {
+   filename: .key,
+   path: .value.path,
+   size: .value.size,
+   created: .value.created,
+   modified: .value.modified,
+   type: .value.type,
+   preview: .value.preview
+}
+' "$INDEX_FILE")
 
-# Search the query inside files and print matching lines with filename and line number
-RESULTS=()
-for f in $FILES; do
-  # Grep query in file (case insensitive)
-  matches=$(grep -i -H -n -- "$QUERY" "$f")
-  if [ -n "$matches" ]; then
-    RESULTS+=("$matches")
-  fi
-done
-
-# If no results
-if [ ${#RESULTS[@]} -eq 0 ]; then
-  echo "No matches found."
+if [[ -z "$RESULT" ]]; then
+  echo "No results."
   exit 0
 fi
 
-# Print top N results (if more than TOP lines)
-echo "Top $TOP results:"
-count=0
-for res in "${RESULTS[@]}"; do
-  echo "$res"
-  count=$((count+$(echo "$res" | wc -l)))
-  if [ "$count" -ge "$TOP" ]; then
-    break
-  fi
-done
+echo "$RESULT" | jq -s .

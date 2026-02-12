@@ -1,0 +1,204 @@
+{
+  "files": {
+    "semsh_sandbox": {
+      "path": "/Users/Shared/semsh_sandbox",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    ".DS_Store": {
+      "path": "contentfolder/.DS_Store",
+      "size": 6148,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "binary",
+      "preview": ""
+    },
+    "cars2": {
+      "path": "cars2",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    "puzzle.txt": {
+      "path": "cars2/puzzle.txt",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": ""
+    },
+    "cars.txt": {
+      "path": "cars2/cars.txt",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": ""
+    },
+    "content": {
+      "path": "content",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    "stars.txt": {
+      "path": "stars.txt",
+      "size": 4,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": "Test"
+    },
+    "contentfolder": {
+      "path": "contentfolder",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    "stuff.txt": {
+      "path": "contentfolder/stuff.txt",
+      "size": 4,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": "Test"
+    },
+    "public.txt": {
+      "path": "contentfolder/public.txt",
+      "size": 97,
+      "created": "2026-02-11",
+      "modified": "2026-02-11",
+      "type": "text",
+      "preview": "PUBLIC NOTES This file contains public information available to all users. Feel free to explore. "
+    },
+    "final.txt": {
+      "path": "contentfolder/final.txt",
+      "size": 42,
+      "created": "2026-02-06",
+      "modified": "2026-02-06",
+      "type": "text",
+      "preview": "Hello, if you are reading this, it worked."
+    },
+    "testing.txt": {
+      "path": "contentfolder/testing.txt",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": ""
+    },
+    "chatbots.txt": {
+      "path": "contentfolder/chatbots.txt",
+      "size": 0,
+      "created": "2026-02-06",
+      "modified": "2026-02-06",
+      "type": "text",
+      "preview": ""
+    },
+    "exams.txt": {
+      "path": "contentfolder/exams.txt",
+      "size": 4,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": "Test"
+    },
+    "secret.txt": {
+      "path": "contentfolder/secret.txt",
+      "size": 16,
+      "created": "2026-02-06",
+      "modified": "2026-02-06",
+      "type": "text",
+      "preview": "TOP SECRET DATA "
+    },
+    "books13.txt": {
+      "path": "contentfolder/books13.txt",
+      "size": 4,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "text",
+      "preview": "Test"
+    },
+    "log.txt": {
+      "path": "contentfolder/log.txt",
+      "size": 86,
+      "created": "2026-02-11",
+      "modified": "2026-02-11",
+      "type": "text",
+      "preview": "Error 104 An error was recorder in this file, check error details for more information"
+    },
+    "indexer.txt": {
+      "path": "contentfolder/indexer.txt",
+      "size": 54,
+      "created": "2026-02-06",
+      "modified": "2026-02-06",
+      "type": "text",
+      "preview": "Yes chatbot has content inside. This is the content.  "
+    },
+    "testfile6.txt": {
+      "path": "contentfolder/testfile6.txt",
+      "size": 0,
+      "created": "2026-02-06",
+      "modified": "2026-02-06",
+      "type": "text",
+      "preview": ""
+    },
+    "content folder": {
+      "path": "content folder",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    ".trash": {
+      "path": ".trash",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    "archive": {
+      "path": ".trash/archive",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "binary",
+      "preview": ""
+    },
+    "bag": {
+      "path": ".trash/bag",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    },
+    "cave": {
+      "path": ".trash/bag/cave",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "binary",
+      "preview": ""
+    },
+    "backup": {
+      "path": "backup",
+      "size": 0,
+      "created": "2026-02-12",
+      "modified": "2026-02-12",
+      "type": "directory",
+      "preview": ""
+    }
+  }
+}

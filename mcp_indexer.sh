@@ -1,42 +1,73 @@
-#!/usr/bin/env bash
+#!/usr/local/bin/bash
+# INDEXER
 
-# Load .env file from the same directory as this script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -o allexport
-    source "$SCRIPT_DIR/.env"
-    set +o allexport
-else
-    echo "ERROR: .env file not found in $SCRIPT_DIR"
-    exit 1
-fi
+INDEX_DIR=".mcp"
+INDEX_FILE="$INDEX_DIR/file_index.json"
+SANDBOX_DIR="/Users/Shared/semsh_sandbox"
 
-# Validate SANDBOX_DIR environment variable
-if [[ -z "$SANDBOX_DIR" ]]; then
-    echo "ERROR: SANDBOX_DIR is not set in .env"
-    exit 1
-fi
+mkdir -p "$INDEX_DIR"
+mkdir -p "$SANDBOX_DIR"
 
-mkdir -p ".mcp"
-INDEX_FILE=".mcp/index.json"
+echo '{"files":{}}' > "$INDEX_FILE"
 
-echo "{"
-echo "  \"files\": {"
+detect_type() {
+  local file="$1"
+  if [ -d "$file" ]; then
+    echo "directory"
+    return
+  fi
+  case "$file" in
+    *.txt|*.log|*.md|*.json|*.csv|*.sh|*.py|*.c|*.cpp|*.java) echo "text" ;;
+    *.jpg|*.png|*.jpeg|*.gif) echo "image" ;;
+    *.pdf) echo "pdf" ;;
+    *.zip|*.tar|*.gz) echo "archive" ;;
+    *) echo "binary" ;;
+  esac
+}
 
-FIRST=1
-for file in "$SANDBOX_DIR"/*; do
-    [[ -f "$file" ]] || continue
-    fname=$(basename "$file")
-    size=$(stat -f "%z" "$file")
-    modified=$(stat -f "%Sm" -t "%Y-%m-%dT%H:%M:%S" "$file")
+file_preview() {
+  local file="$1"
+  if [ -d "$file" ]; then
+    echo '""'
+  elif file "$file" | grep -q "text"; then
+    head -n 5 "$file" 2>/dev/null | tr '\n' ' ' | jq -R .
+  else
+    echo '""'
+  fi
+}
 
-    if [[ $FIRST -eq 0 ]]; then echo ","; fi
-    FIRST=0
+find "$SANDBOX_DIR" \( -type f -o -type d \) | while read -r file; do
+  relpath="${file#$SANDBOX_DIR/}"
+  name=$(basename "$file")
 
-    echo "    \"$fname\": {\"path\": \"$file\", \"size\": $size, \"modified\": \"$modified\"}"
+  size=0
+  if [ -f "$file" ]; then
+    size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
+  fi
+
+  created=$(date -r "$file" +"%Y-%m-%d" 2>/dev/null || echo "unknown")
+  modified=$(date -r "$file" +"%Y-%m-%d" 2>/dev/null || echo "unknown")
+
+  ftype=$(detect_type "$file")
+  preview=$(file_preview "$file")
+
+  jq --arg name "$name" \
+     --arg path "$relpath" \
+     --arg created "$created" \
+     --arg modified "$modified" \
+     --arg type "$ftype" \
+     --argjson size "$size" \
+     --argjson preview "$preview" \
+  '
+  .files[$name] = {
+     "path": $path,
+     "size": $size,
+     "created": $created,
+     "modified": $modified,
+     "type": $type,
+     "preview": $preview
+  }
+  ' "$INDEX_FILE" > "$INDEX_FILE.tmp" && mv "$INDEX_FILE.tmp" "$INDEX_FILE"
 done
 
-echo "  }"
-echo "}" > "$INDEX_FILE"
-
-echo "Index written to $INDEX_FILE"
+echo "Index rebuilt."
